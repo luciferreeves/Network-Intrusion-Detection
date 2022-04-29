@@ -43,7 +43,10 @@ get_color <- function(a = 1) {
 }
 
 # Load the models
-model.dl = h2o.loadModel(dl_model)
+model.dl <- h2o.loadModel(dl_model)
+model.drf <- h2o.loadModel(drf_model)
+model.gbm <- h2o.loadModel(gbm_model)
+model.nb <- h2o.loadModel(nb_model)
 
 # Define UI for application
 ui <- fluidPage(
@@ -100,7 +103,7 @@ ui <- fluidPage(
                 sidebarPanel(
                     selectInput(
                         "plotType",
-                        p("Type of Plot:"),
+                        p("Type of plot:"),
                         choices = c(Histogram = "hist",
                                     "Scatter Plot" = "scatter",
                                     "Mosaic Plot" = "mosaic")
@@ -110,12 +113,12 @@ ui <- fluidPage(
                         condition = "input.plotType == 'hist'",
                         selectInput(
                             "plotVariable",
-                            p("Feature to Visualize:"),
+                            p("Feature to visualize:"),
                             choices = features
                         ),
                         selectInput(
                             "plotVariant",
-                            p("Plot Variant:"),
+                            p("Plot variant:"),
                             choices = c("Normal", "Log 10 Scale")
                         )   
                     ),
@@ -125,7 +128,7 @@ ui <- fluidPage(
                         condition = "input.plotType == 'scatter'",
                         selectInput(
                             "plotVariable1",
-                            p("First Feature to Visualize:"),
+                            p("First feature to visualize:"),
                             choices = features
                         ),
                         uiOutput("secondSelection")
@@ -136,7 +139,7 @@ ui <- fluidPage(
                         condition = "input.plotType == 'mosaic'",
                         selectInput(
                             "mosaicVariable",
-                            p("Select Features to Visualize:"),
+                            p("Select features to visualize:"),
                             choices = c("Labels vs Protocols" = "labproto")
                         )
                     ),
@@ -158,8 +161,11 @@ ui <- fluidPage(
                 sidebarPanel(
                     selectInput(
                         "modelType",
-                        p("Choose a Model to Predict:"),
-                        choices = c("Deep Learning" = "dl")
+                        p("Choose a model to predict:"),
+                        choices = c("Deep Learning" = "dl",
+                                    "Distributed Random Forest" = "drf",
+                                    "Gradient Boosting Machine" = "gbm",
+                                    "Naive Bayes" = "nb")
                     ),
                     numericInput("npin", "Number of inbound packets:", 
                                  10, min = 0),
@@ -169,9 +175,9 @@ ui <- fluidPage(
                                  2000, min = 0),
                     numericInput("nbob", "Number of bytes out:", 
                                  10000, min = 0),
-                    numericInput("dprt", "Destination Port (1024 - 49151):", 
+                    numericInput("dprt", "Destination port (1024 - 49151):", 
                                  5234, min = 1024, max = 49151),
-                    numericInput("tepy", "Total Entropy:", 
+                    numericInput("tepy", "Total entropy:", 
                                  18000, min = 0),
                     actionButton("predictButton", "Predict",
                                  width = "100%", icon = icon("think-peaks"),
@@ -180,11 +186,26 @@ ui <- fluidPage(
                 mainPanel(
                     tags$label(h3('Status/Output')),
                     verbatimTextOutput('contents'),
-                    p(strong("Prediction Legend"), br(), br(), em("1.00 - 1.99"), 
-                      " - Benign", br(), em("2.00 - 2.99"), " - Malicious",
-                      br(), em("3.00 - 3.99"), " - Outlier", 
-                    style="text-align:justify;color:black;
+                    fluidRow(
+                        column(
+                            width = 6,
+                            p(strong("Prediction Legend"), br(), br(), em("1"), 
+                              " - Benign", br(), em("2"), " - Malicious",
+                              br(), em("3"), " - Outlier", 
+                              style="text-align:justify;color:black;
             background-color:lavender;padding:15px;border-radius:10px"),
+                        ),
+                        column(
+                            width = 6,
+                            p(strong("Probabilty Legend"), br(), br(), em("p1"), 
+                              " - Probability of being a Benign Connection",
+                              br(), em("p2"), " - Probability of being a 
+                              Malicious Connection", br(), em("p3"), " - 
+                              Probability of being an Outlier Connection", 
+                              style="text-align:justify;color:black;
+            background-color:papayawhip;padding:15px;border-radius:10px"),
+                        )
+                    ),
                     tableOutput('tabledata'), # Prediction results table
                     fluidRow(
                         column(
@@ -202,6 +223,48 @@ ui <- fluidPage(
                             )
                         )
                     )
+                )
+            )
+        ),
+        tabPanel(
+            "Model Metrics",
+            sidebarLayout(
+                sidebarPanel(
+                    selectInput(
+                        "metricModelType",
+                        p("Choose a model to show metrics:"),
+                        choices = c("Deep Learning" = "dl",
+                                    "Distributed Random Forest" = "drf",
+                                    "Gradient Boosting Machine" = "gbm",
+                                    "Naive Bayes" = "nb"),
+                    ),
+                    actionButton("metricsButton", "Show Metrics",
+                                 width = "100%", icon = icon("tachometer-alt"),
+                                 class = "btn btn-primary")
+                ),
+                mainPanel(
+                    verbatimTextOutput('metrics')
+                )
+            )
+        ),
+        tabPanel(
+            "Model Summary",
+            sidebarLayout(
+                sidebarPanel(
+                    selectInput(
+                        "summaryModelType",
+                        p("Choose a model to show metrics:"),
+                        choices = c("Deep Learning" = "dl",
+                                    "Distributed Random Forest" = "drf",
+                                    "Gradient Boosting Machine" = "gbm",
+                                    "Naive Bayes" = "nb"),
+                    ),
+                    actionButton("summaryButton", "Show Information",
+                                 width = "100%", icon = icon("clipboard"),
+                                 class = "btn btn-primary")
+                ),
+                mainPanel(
+                    verbatimTextOutput('summary')
                 )
             )
         )
@@ -228,6 +291,7 @@ server <- function(input, output) {
     )
     
     datasetInput <- reactive({
+        modelType <- input$modelType
         req(input$npin)
         req(input$npob)
         req(input$nbin)
@@ -246,15 +310,71 @@ server <- function(input, output) {
         write.table(input,"input.csv", sep=",", quote = FALSE, 
                     row.names = FALSE, col.names = FALSE)
         test <- read.csv(paste("input", ".csv", sep=""), header = TRUE)
-        prediction <- predict(model.dl, as.h2o(test))
+        
+        if (modelType == "dl") {
+            predict(model.dl, as.h2o(test))
+        } else if (modelType == "drf") {
+            predict(model.drf, as.h2o(test))
+        } else if (modelType == "gbm") {
+            predict(model.gbm, as.h2o(test))
+        } else if (modelType == "nb") {
+            predict(model.nb, as.h2o(test))
+        }
     })
     
     output$varImpPlot <- renderPlot({
-        h2o.varimp_plot(dl)
+        modelType <- input$modelType
+        if (modelType == "dl") {
+            h2o.varimp_plot(model.dl)
+        } else if (modelType == "drf") {
+            h2o.varimp_plot(model.drf)
+        } else if (modelType == "gbm") {
+            h2o.varimp_plot(model.gbm)
+        }
+        
     })
     
     output$lcPlot <- renderPlot({
-        h2o.learning_curve_plot(dl)
+        modelType <- input$modelType
+        if (modelType == "dl") {
+            h2o.learning_curve_plot(model.dl)
+        } else if (modelType == "drf") {
+            h2o.learning_curve_plot(model.drf)
+        } else if (modelType == "gbm") {
+            h2o.learning_curve_plot(model.gbm)
+        }
+    })
+    
+    output$metrics <- renderPrint({
+        input$metricsButton
+        isolate({
+            modelType <- input$metricModelType
+            if (modelType == "dl") {
+                h2o.performance(model.dl)
+            } else if (modelType == "drf") {
+                h2o.performance(model.drf)
+            } else if (modelType == "gbm") {
+                h2o.performance(model.gbm)
+            } else {
+                h2o.performance(model.nb)
+            }
+        })
+    })
+    
+    output$summary <- renderPrint({
+        input$summaryButton
+        isolate({
+            modelType <- input$summaryModelType
+            if (modelType == "dl") {
+                summary(model.dl)
+            } else if (modelType == "drf") {
+                summary(model.drf)
+            } else if (modelType == "gbm") {
+                summary(model.gbm)
+            } else {
+                summary(model.nb)
+            }
+        })
     })
     
     # Status/Output Text Box
@@ -277,7 +397,7 @@ server <- function(input, output) {
         selectedFeature <- input$plotVariable1
         selectInput(
             "plotVariable2",
-            p("Second Feature to Visualize:"),
+            p("Second feature to visualize:"),
             choices = features[!features %in% selectedFeature]
         )
     })

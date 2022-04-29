@@ -6,22 +6,27 @@ localH2O = h2o.init()
 
 # Importing the Network Intrusion Data set
 dataset <- fread("2020.10.01.csv")
-dataset = na.omit(dataset)
+dataset <- na.omit(dataset)
 dataset <- dataset[, -c(12, 13)]
+correlationSet <- dataset
 
-# Encoding 'label' as Numeric Variable
+# Encoding 'label' as Catagorical Variable
 dataset$label <- factor(dataset$label,
                            levels = c("benign", "malicious", "outlier"),
                            labels = c(1, 2, 3))
-dataset$label <- as.numeric(dataset$label)
+correlationSet$label <- factor(correlationSet$label,
+                        levels = c("benign", "malicious", "outlier"),
+                        labels = c(1, 2, 3))
+
+correlationSet$label <- as.numeric(correlationSet$label)
 
 # Remove Redundant Features - First Find Correlated Features
-correlationMatrix <- cor(dataset)
+correlationMatrix <- cor(correlationSet)
 highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.5)
 print(highlyCorrelated)
 
 df <- dataset[, c(8,2,7,3,5,12,13)]
-df <- as.h2o(df)
+df <- as.h2o(dataset)
 
 head(dataset[, c(8,2,7,3,5,12,13)])
 
@@ -37,12 +42,12 @@ train <- df_splits[[1]]
 test <- df_splits[[2]]
 
 
-# Build and train the model:
+# Build and train Deep learning model:
 dl <- h2o.deeplearning(x = 1:6,
                        y = "label",
-                       distribution = "tweedie",
+                       distribution = "multinomial",
                        hidden = c(1),
-                       epochs = 1000,
+                       epochs = 100,
                        train_samples_per_iteration = -1,
                        reproducible = TRUE,
                        activation = "Tanh",
@@ -50,21 +55,18 @@ dl <- h2o.deeplearning(x = 1:6,
                        balance_classes = FALSE,
                        force_load_balance = FALSE,
                        seed = 23123,
-                       tweedie_power = 1.5,
                        score_training_samples = 0,
                        score_validation_samples = 0,
                        training_frame = df,
                        stopping_rounds = 0)
 
-# Eval performance:
+# Eval performance of deep learning model:
 perf <- h2o.performance(dl)
 perf
 
 # Generate predictions on a test set (if necessary):
 pred <- h2o.predict(dl, newdata = df)
-pred
 summary(dl)
-plot(dl)
 
 # Save the model
 dl_model <- h2o.saveModel(object = dl, 
@@ -72,57 +74,67 @@ dl_model <- h2o.saveModel(object = dl,
                           force = TRUE)
 print(dl_model)
 
-h2o.varimp_plot(dl)
-h2o.learning_curve_plot(dl)
+
+# Build and train distributed random forest model:
+drf <- h2o.randomForest(x = predictors,
+                             y = response,
+                             ntrees = 10,
+                             max_depth = 5,
+                             min_rows = 10,
+                             calibration_frame = test,
+                             binomial_double_trees = TRUE,
+                             training_frame = train,
+                             validation_frame = test)
+
+# Eval Performance of distributed random forest model:
+h2o.performance(drf)
+summary(dl)
+
+# Save the model
+drf_model <- h2o.saveModel(object = drf, 
+                           path = "/Users/lucifer/Documents/projects/NetworkIntrusionDetection/models", 
+                           force = TRUE)
+
+# Build and train the Gradient Boosting machine model:
+gbm <- h2o.gbm(x = predictors,
+                    y = response,
+                    nfolds = 5,
+                    seed = 1111,
+                    keep_cross_validation_predictions = TRUE,
+                    training_frame = df)
 
 
+# Eval Performance of GBM model:
+h2o.performance(gbm)
+summary(dl)
+
+# Save the model
+gbm_model <- h2o.saveModel(object = gbm, 
+                           path = "/Users/lucifer/Documents/projects/NetworkIntrusionDetection/models", 
+                           force = TRUE)
+
+# Build and train the Naive Bayes model:
+nb <- h2o.naiveBayes(x = predictors,
+                          y = response,
+                          training_frame = df,
+                          laplace = 0,
+                          nfolds = 5,
+                          seed = 1234)
+
+# Eval performance of the Naive Bayes:
+h2o.performance(nb)
+summary(nb)
 
 
+nb_model <- h2o.saveModel(object = nb, 
+                           path = "/Users/lucifer/Documents/projects/NetworkIntrusionDetection/models", 
+                           force = TRUE)
 
-
-
-
-ind <- createDataPartition(dataset$label, p=0.6, list=FALSE)
-dataset.train <- dataset[ind,]
-dataset.test <- dataset[-ind,]
-
-
-
-
-
-
-
-# Decision Tree
-tree <- rpart(label ~., data = dataset.train)
-rpart.plot(tree)
-printcp(tree)
-plotcp(tree)
-p <- predict(tree, dataset.train)
-confusionMatrix(p, dataset.train$label, positive='y')
-
-
-
-
-# Split the class attribute
-dataset.traintarget <- dataset[ind == 1, 5]
-dataset.testtarget <- dataset[ind==2, 5]
-
-
-# Remove Redundant Features - First Find Correlated Features
-correlationMatrix <- cor(dataset)
-highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.5)
-print(highlyCorrelated)
-
-dataset <- dataset[, c(8,2,7,3,5,12,13)]
-
-
-
-
-
-
-
-
-
-
-
-
+# Build and train the XGBoost model:
+xgb <- h2o.xgboost(x = predictors,
+                   y = response,
+                   training_frame = train,
+                   validation_frame = test,
+                   booster = "dart",
+                   normalize_type = "tree",
+                   seed = 1234)
