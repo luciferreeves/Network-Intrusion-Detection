@@ -12,7 +12,7 @@ library(DT)
 library(data.table)
 library(ggplot2)
 library(shinycssloaders)
-
+library(h2o)
 
 # Defining Non Changing Variables
 data <- fread("2020.10.01.csv")
@@ -41,6 +41,9 @@ feature_variables <- c("avg_ipt", "bytes_in", "bytes_out", "dest_ip",
 get_color <- function(a = 1) {
     return(alpha("#e95420", a))
 }
+
+# Load the models
+model.dl = h2o.loadModel(dl_model)
 
 # Define UI for application
 ui <- fluidPage(
@@ -139,8 +142,7 @@ ui <- fluidPage(
                     ),
                     actionButton("plot", "Plot Graph",
                                  width = "100%", icon = icon("chart-line"),
-                                 style="color: #fff; background-color: #e95420;
-                                 outline: none")
+                                 class = "btn btn-primary")
                 ),
                 mainPanel(
                     withSpinner(
@@ -151,7 +153,57 @@ ui <- fluidPage(
             )
         ),
         tabPanel(
-            "Compare Models"
+            "Predictions",
+            sidebarLayout(
+                sidebarPanel(
+                    selectInput(
+                        "modelType",
+                        p("Choose a Model to Predict:"),
+                        choices = c("Deep Learning" = "dl")
+                    ),
+                    numericInput("npin", "Number of inbound packets:", 
+                                 10, min = 0),
+                    numericInput("npob", "Number of outbound packets:", 
+                                 10, min = 0),
+                    numericInput("nbin", "Number of bytes in:", 
+                                 2000, min = 0),
+                    numericInput("nbob", "Number of bytes out:", 
+                                 10000, min = 0),
+                    numericInput("dprt", "Destination Port (1024 - 49151):", 
+                                 5234, min = 1024, max = 49151),
+                    numericInput("tepy", "Total Entropy:", 
+                                 18000, min = 0),
+                    actionButton("predictButton", "Predict",
+                                 width = "100%", icon = icon("think-peaks"),
+                                 class = "btn btn-primary")
+                ),
+                mainPanel(
+                    tags$label(h3('Status/Output')),
+                    verbatimTextOutput('contents'),
+                    p(strong("Prediction Legend"), br(), br(), em("1.00 - 1.99"), 
+                      " - Benign", br(), em("2.00 - 2.99"), " - Malicious",
+                      br(), em("3.00 - 3.99"), " - Outlier", 
+                    style="text-align:justify;color:black;
+            background-color:lavender;padding:15px;border-radius:10px"),
+                    tableOutput('tabledata'), # Prediction results table
+                    fluidRow(
+                        column(
+                            width = 6,
+                            withSpinner(
+                                plotOutput("varImpPlot"),
+                                type = 6, color = "#e95420"
+                            )
+                        ),
+                        column(
+                            width = 6,
+                            withSpinner(
+                                plotOutput("lcPlot"),
+                                type = 6, color = "#e95420"
+                            )
+                        )
+                    )
+                )
+            )
         )
     )
 )
@@ -174,6 +226,52 @@ server <- function(input, output) {
         rownames = FALSE,
         colnames = features)
     )
+    
+    datasetInput <- reactive({
+        req(input$npin)
+        req(input$npob)
+        req(input$nbin)
+        req(input$nbob)
+        req(input$dprt)
+        req(input$tepy)
+        df <- data.frame(
+            Name = c("num_pkts_in", "bytes_in", "num_pkts_out", "bytes_out",
+                     "dest_port", "total_entropy"),
+            Value = as.character(c(input$npin, input$nbin, input$npob, 
+                                   input$nbob, input$dprt, input$tepy)),
+            stringsAsFactors = FALSE)
+        labels <- 0
+        df <- rbind(df, labels)
+        input <- transpose(df)
+        write.table(input,"input.csv", sep=",", quote = FALSE, 
+                    row.names = FALSE, col.names = FALSE)
+        test <- read.csv(paste("input", ".csv", sep=""), header = TRUE)
+        prediction <- predict(model.dl, as.h2o(test))
+    })
+    
+    output$varImpPlot <- renderPlot({
+        h2o.varimp_plot(dl)
+    })
+    
+    output$lcPlot <- renderPlot({
+        h2o.learning_curve_plot(dl)
+    })
+    
+    # Status/Output Text Box
+    output$contents <- renderPrint({
+        if (input$predictButton>0) { 
+            isolate("Calculation complete.") 
+        } else {
+            return("Server is ready for calculation.")
+        }
+    })
+    
+    # Prediction results table
+    output$tabledata <- renderTable({
+        if (input$predictButton>0) { 
+            isolate(datasetInput())
+        } 
+    })
     
     output$secondSelection <- renderUI({
         selectedFeature <- input$plotVariable1
