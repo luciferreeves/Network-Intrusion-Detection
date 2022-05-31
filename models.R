@@ -129,12 +129,3 @@ summary(nb)
 nb_model <- h2o.saveModel(object = nb, 
                            path = "/Users/lucifer/Documents/projects/NetworkIntrusionDetection/models", 
                            force = TRUE)
-
-# Build and train the XGBoost model:
-xgb <- h2o.xgboost(x = predictors,
-                   y = response,
-                   training_frame = train,
-                   validation_frame = test,
-                   booster = "dart",
-                   normalize_type = "tree",
-                   seed = 1234)
